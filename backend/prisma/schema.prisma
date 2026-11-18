@@ -10,7 +10,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL") // comes from .env — never hardcode credentials
 }
 
 // ---- ENUMS: fixed sets of allowed values ------------------------------------
