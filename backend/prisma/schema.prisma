@@ -1,0 +1,98 @@
+// =============================================================================
+// Prisma schema — TenantHub
+// This file DEFINES your database tables. `prisma migrate` turns it into real
+// PostgreSQL tables. Read top to bottom like a map of all our data.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // comes from .env — never hardcode credentials
+}
+
+// ---- ENUMS: fixed sets of allowed values ------------------------------------
+
+enum Role {
+  SUPER_ADMIN // platform owner, sits ABOVE all tenants (tenantId is null)
+  TENANT_ADMIN // admin inside one tenant
+  TENANT_USER // normal user inside one tenant
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED // Super Admin can suspend — blocks all login + requests
+}
+
+// ---- TENANT: one company using the platform ---------------------------------
+
+model Tenant {
+  id        String       @id @default(uuid())
+  name      String
+  slug      String       @unique // e.g. "acme" — used at login to resolve tenant
+  status    TenantStatus @default(ACTIVE)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  users    User[] // a tenant has many users
+  projects Project[] // a tenant has many projects
+}
+
+// ---- USER: belongs to a tenant (except SUPER_ADMIN) -------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  email        String
+  passwordHash String // argon2 hash — NEVER the raw password
+  role         Role     @default(TENANT_USER)
+  // Nullable: a SUPER_ADMIN has NO tenant. Tenant users always have one.
+  tenantId     String?
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
+
+  // Email is unique PER TENANT, not globally: two different companies can each
+  // have a "john@x.com". The null-tenant super admins are unique by email too.
+  @@unique([tenantId, email])
+}
+
+// ---- PROJECT: our tenant-owned resource with full CRUD (requirement A3) ------
+
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  // THE isolation column. Every project belongs to exactly one tenant.
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+// ---- REFRESH TOKEN: powers secure rotation + reuse detection (B1) -----------
+// One row = one issued refresh token. Tokens are grouped into a "family"
+// (= one login session). Rotating issues a new row in the same family and
+// marks the old one used. Replaying a used/revoked token revokes the family.
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  familyId  String // all rotations of one session share this id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String // SHA-256 / argon2 hash of the token — never the raw token
+  expiresAt DateTime
+  // When this token was rotated away (consumed). Null = still the active token.
+  usedAt    DateTime?
+  // Set true when the whole family is revoked (logout or reuse detected).
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([familyId])
+  @@index([userId])
+}
